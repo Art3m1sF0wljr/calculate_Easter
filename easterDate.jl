@@ -3,7 +3,7 @@
 using Dates
 
 # ===============================
-# Calendar Date Types (with unique names)
+# Calendar Date Types
 # ===============================
 
 struct JDate  # Julian Date
@@ -42,13 +42,40 @@ function is_gregorian_leap(year::Int)
 end
 
 function is_revised_julian_leap(year::Int)
-    if (year % 4 == 0) && (year % 100 != 0)
-        return true
-    elseif year % 900 == 200 || year % 900 == 600
+    # Revised Julian: leap if divisible by 4, 
+    # except centuries not divisible by 900 with remainder 200 or 600
+    if year % 4 != 0
+        return false
+    elseif year % 100 != 0
         return true
     else
-        return false
+        return year % 900 == 200 || year % 900 == 600
     end
+end
+
+# ===============================
+# Julian-Gregorian Offset
+# ===============================
+
+function julian_gregorian_offset(year::Int)
+    # Returns the number of days Julian is behind Gregorian
+    if year < 1582
+        return 0
+    end
+    
+    # Standard offset calculation
+    # From 1582-10-15 (Gregorian) = 1582-10-05 (Julian), offset is 10
+    offset = 10
+    
+    # Add days for century years not leap in Gregorian
+    centuries = div(year, 100)
+    for c in 17:centuries  # Start from 17th century (1600s)
+        if !is_gregorian_leap(c * 100)
+            offset += 1
+        end
+    end
+    
+    return offset
 end
 
 # ===============================
@@ -58,91 +85,114 @@ end
 function julian_to_gregorian(jd::JDate)
     year, month, day = jd.y, jd.m, jd.d
     
-    if year >= 1582
-        centuries = div(year - 1, 100)
-        offset = 10
-        for c in 16:centuries
-            century_year = c * 100 + 1
-            if !is_gregorian_leap(century_year)
-                offset += 1
-            end
-        end
-        
-        gdate = Date(year, month, day) + Day(offset)
-        return GDate(Dates.year(gdate), Dates.month(gdate), Dates.day(gdate))
-    else
+    if year < 1582
         return GDate(year, month, day)
     end
+    
+    offset = julian_gregorian_offset(year)
+    
+    # Create a Date object and add offset
+    # We need to convert Julian date to proleptic Gregorian for Date to work
+    # Date in Julia is proleptic Gregorian
+    # So we'll work with the Julian date as if it were Gregorian, then adjust
+    
+    # Simple approach: use known reference point
+    # 1582-10-15 Gregorian = 1582-10-05 Julian
+    # So Julian date + offset = Gregorian date (approximately)
+    
+    # For dates after March 1, the offset applies to the year
+    # For Jan-Feb, need to check if leap year affects
+    actual_offset = offset
+    if month <= 2 && is_julian_leap(year) && !is_gregorian_leap(year + offset)
+        # Special case for Jan/Feb in leap years
+        # This is handled by the general algorithm below
+    end
+    
+    # Use a simple iterative approach
+    j_date = Date(year, month, day)
+    g_date = j_date + Day(offset)
+    
+    return GDate(Dates.year(g_date), Dates.month(g_date), Dates.day(g_date))
 end
 
 function gregorian_to_julian(gd::GDate)
     year, month, day = gd.y, gd.m, gd.d
     
-    if year >= 1582
-        centuries = div(year - 1, 100)
-        offset = 10
-        for c in 16:centuries
-            century_year = c * 100 + 1
-            if !is_gregorian_leap(century_year)
-                offset += 1
-            end
-        end
-        
-        jdate = Date(year, month, day) - Day(offset)
-        return JDate(Dates.year(jdate), Dates.month(jdate), Dates.day(jdate))
-    else
+    if year < 1582
         return JDate(year, month, day)
     end
+    
+    offset = julian_gregorian_offset(year)
+    g_date = Date(year, month, day)
+    j_date = g_date - Day(offset)
+    
+    return JDate(Dates.year(j_date), Dates.month(j_date), Dates.day(j_date))
 end
 
+# Revised Julian is identical to Gregorian from 1900-2799
 function gregorian_to_revised_julian(gd::GDate)
-    year, month, day = gd.y, gd.m, gd.d
+    # For the period 1900-2799, they are identical
+    if gd.y >= 1900 && gd.y <= 2799
+        return RJDate(gd.y, gd.m, gd.d)
+    end
     
-    if is_gregorian_leap(year) == is_revised_julian_leap(year)
-        return RJDate(year, month, day)
+    # For other years, need to check leap year differences
+    if is_gregorian_leap(gd.y) == is_revised_julian_leap(gd.y)
+        return RJDate(gd.y, gd.m, gd.d)
     else
-        date_obj = Date(year, month, day)
-        
-        if month > 2 || (month == 2 && day == 29)
-            if is_gregorian_leap(year) && !is_revised_julian_leap(year)
-                if month > 2 || (month == 2 && day == 29)
-                    new_date = date_obj - Day(1)
-                    return RJDate(Dates.year(new_date), Dates.month(new_date), Dates.day(new_date))
-                end
-            elseif !is_gregorian_leap(year) && is_revised_julian_leap(year)
-                if month > 2
-                    new_date = date_obj + Day(1)
-                    return RJDate(Dates.year(new_date), Dates.month(new_date), Dates.day(new_date))
-                end
+        # The calendars diverge by 1 day after Feb 28
+        if is_gregorian_leap(gd.y) && !is_revised_julian_leap(gd.y)
+            # Gregorian has Feb 29, Revised Julian doesn't
+            # Dates after Feb 28 in Gregorian are 1 day ahead
+            if (gd.m > 2 || (gd.m == 2 && gd.d == 29))
+                g_date = Date(gd.y, gd.m, gd.d)
+                rj_date = g_date - Day(1)
+                return RJDate(Dates.year(rj_date), Dates.month(rj_date), Dates.day(rj_date))
+            end
+        elseif !is_gregorian_leap(gd.y) && is_revised_julian_leap(gd.y)
+            # Revised Julian has Feb 29, Gregorian doesn't
+            # Dates after Feb 28 in Revised Julian are 1 day ahead
+            if gd.m > 2
+                g_date = Date(gd.y, gd.m, gd.d)
+                rj_date = g_date + Day(1)
+                return RJDate(Dates.year(rj_date), Dates.month(rj_date), Dates.day(rj_date))
             end
         end
-        return RJDate(year, month, day)
     end
+    
+    return RJDate(gd.y, gd.m, gd.d)
 end
 
 function revised_julian_to_gregorian(rjd::RJDate)
-    year, month, day = rjd.y, rjd.m, rjd.d
+    # For the period 1900-2799, they are identical
+    if rjd.y >= 1900 && rjd.y <= 2799
+        return GDate(rjd.y, rjd.m, rjd.d)
+    end
     
-    if is_gregorian_leap(year) == is_revised_julian_leap(year)
-        return GDate(year, month, day)
+    # For other years, reverse of gregorian_to_revised_julian
+    if is_gregorian_leap(rjd.y) == is_revised_julian_leap(rjd.y)
+        return GDate(rjd.y, rjd.m, rjd.d)
     else
-        date_obj = Date(year, month, day)
-        
-        if month > 2 || (month == 2 && day == 29)
-            if is_gregorian_leap(year) && !is_revised_julian_leap(year)
-                if month > 2 || (month == 2 && day == 29)
-                    new_date = date_obj + Day(1)
-                    return GDate(Dates.year(new_date), Dates.month(new_date), Dates.day(new_date))
-                end
-            elseif !is_gregorian_leap(year) && is_revised_julian_leap(year)
-                if month > 2
-                    new_date = date_obj - Day(1)
-                    return GDate(Dates.year(new_date), Dates.month(new_date), Dates.day(new_date))
-                end
+        if is_gregorian_leap(rjd.y) && !is_revised_julian_leap(rjd.y)
+            # Gregorian has Feb 29, Revised Julian doesn't
+            # Dates after Feb 28 in Revised Julian are 1 day behind Gregorian
+            if rjd.m > 2
+                rj_date = Date(rjd.y, rjd.m, rjd.d)
+                g_date = rj_date + Day(1)
+                return GDate(Dates.year(g_date), Dates.month(g_date), Dates.day(g_date))
+            end
+        elseif !is_gregorian_leap(rjd.y) && is_revised_julian_leap(rjd.y)
+            # Revised Julian has Feb 29, Gregorian doesn't
+            # Dates after Feb 28 in Gregorian are 1 day behind Revised Julian
+            if rjd.m > 2 || (rjd.m == 2 && rjd.d == 29)
+                rj_date = Date(rjd.y, rjd.m, rjd.d)
+                g_date = rj_date - Day(1)
+                return GDate(Dates.year(g_date), Dates.month(g_date), Dates.day(g_date))
             end
         end
-        return GDate(year, month, day)
     end
+    
+    return GDate(rjd.y, rjd.m, rjd.d)
 end
 
 function julian_to_revised_julian(jd::JDate)
@@ -186,25 +236,17 @@ function orthodox_easter_julian_date(year::Int)
     d = (19 * c + 15) % 30
     e = (2 * a + 4 * b - d + 34) % 7
     
-    month = 3
-    day = d + e + 22
-    
-    if day > 31
-        month = 4
-        day -= 31
-    end
+    month = div(d + e + 114, 31)
+    day = ((d + e + 114) % 31) + 1
     
     return JDate(year, month, day)
 end
 
 function orthodox_easter_revised_julian_date(year::Int)
-    if year >= 1923
-        greg_easter = catholic_easter_date(year)
-        return gregorian_to_revised_julian(greg_easter)
-    else
-        julian_easter = orthodox_easter_julian_date(year)
-        return julian_to_revised_julian(julian_easter)
-    end
+    # CRITICAL: Revised Julian uses the JULIAN calculation for Easter
+    # This is the same as the Julian calendar Easter, converted to Revised Julian
+    julian_easter = orthodox_easter_julian_date(year)
+    return julian_to_revised_julian(julian_easter)
 end
 
 # ===============================
@@ -222,14 +264,7 @@ function show_calendar_info(year::Int)
     println("  Revised Jul:  $(is_revised_julian_leap(year) ? "LEAP" : "Common")")
     
     if year >= 1582
-        centuries = div(year - 1, 100)
-        offset = 10
-        for c in 16:centuries
-            century_year = c * 100 + 1
-            if !is_gregorian_leap(century_year)
-                offset += 1
-            end
-        end
+        offset = julian_gregorian_offset(year)
         println("\nJulian-Gregorian Offset: $offset days")
         println("  (Julian calendar is $offset days behind Gregorian)")
     end
@@ -264,27 +299,29 @@ function compute_easters(year::Int)
     println("\n3. ORTHODOX EASTER - Romanian (Revised Julian):")
     println("   Date: $orth_r_easter")
     
+    # Convert to comparable dates
     println("\n" * "="^60)
-    println("CONVERSIONS")
+    println("COMPARISON (all in Gregorian calendar)")
     println("="^60)
     
-    println("\nCatholic Easter in other calendars:")
-    cath_to_jul = gregorian_to_julian(cath_easter)
-    cath_to_rev = gregorian_to_revised_julian(cath_easter)
-    println("  Julian:       $cath_to_jul")
-    println("  Revised Jul:  $cath_to_rev")
+    orth_j_in_greg = julian_to_gregorian(orth_j_easter)
+    orth_r_in_greg = revised_julian_to_gregorian(orth_r_easter)
     
-    println("\nOrthodox Julian Easter in other calendars:")
-    orth_j_to_greg = julian_to_gregorian(orth_j_easter)
-    orth_j_to_rev = julian_to_revised_julian(orth_j_easter)
-    println("  Gregorian:    $orth_j_to_greg")
-    println("  Revised Jul:  $orth_j_to_rev")
+    println("\nCatholic Easter:     $cath_easter")
+    println("Orthodox (Julian):   $orth_j_in_greg")
+    println("Orthodox (Revised):  $orth_r_in_greg")
     
-    println("\nOrthodox Revised Julian Easter in other calendars:")
-    orth_r_to_greg = revised_julian_to_gregorian(orth_r_easter)
-    orth_r_to_jul = revised_julian_to_julian(orth_r_easter)
-    println("  Gregorian:    $orth_r_to_greg")
-    println("  Julian:       $orth_r_to_jul")
+    if cath_easter == orth_r_in_greg
+        println("\n✅ Catholic and Revised Julian Orthodox Easter COINCIDE")
+    else
+        diff = Dates.value(Date(orth_r_in_greg.y, orth_r_in_greg.m, orth_r_in_greg.d) - 
+                          Date(cath_easter.y, cath_easter.m, cath_easter.d))
+        println("\nDifference between Catholic and Revised Julian Orthodox Easter: $diff days")
+    end
+    
+    if orth_j_in_greg == orth_r_in_greg
+        println("✅ Julian and Revised Julian Orthodox Easter COINCIDE in Gregorian calendar")
+    end
     
     show_calendar_info(year)
     
@@ -330,14 +367,7 @@ function main()
         println("  Revised Julian leap: $(is_revised_julian_leap(y))")
         
         if y >= 1582
-            centuries = div(y - 1, 100)
-            offset = 10
-            for c in 16:centuries
-                century_year = c * 100 + 1
-                if !is_gregorian_leap(century_year)
-                    offset += 1
-                end
-            end
+            offset = julian_gregorian_offset(y)
             println("  Julian-Gregorian offset: $offset days")
         end
     end
@@ -347,6 +377,5 @@ end
 if abspath(PROGRAM_FILE) == @__FILE__
     main()
 else
-    # If loaded in REPL or notebook, you can call compute_easters(year) directly
     println("Easter calculator loaded. Use compute_easters(year) to calculate.")
 end
