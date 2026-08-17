@@ -371,8 +371,6 @@ function main()
             println("  Julian-Gregorian offset: $offset days")
         end
     end
-    println("\nNOTE: Julian dates are in the Julian calendar.")
-    println("      Revised Julian dates match Gregorian calendar from 1900-2799.")
 end
 
 # Run the program
